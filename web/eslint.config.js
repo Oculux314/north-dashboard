@@ -5,6 +5,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
 import tseslint from "typescript-eslint";
 import convexPlugin from "@convex-dev/eslint-plugin";
+import atlaskitDesignSystem from "@atlaskit/eslint-plugin-design-system";
 
 export default defineConfig([
   {
@@ -21,6 +22,7 @@ export default defineConfig([
     extends: [
       js.configs.recommended,
       ...tseslint.configs.recommendedTypeChecked,
+      atlaskitDesignSystem.configs.recommended,
     ],
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
@@ -40,6 +42,7 @@ export default defineConfig([
     plugins: {
       "react-hooks": reactHooks,
       "react-refresh": reactRefresh,
+      "@atlaskit/design-system": atlaskitDesignSystem,
     },
     rules: {
       ...reactHooks.configs.recommended.rules,

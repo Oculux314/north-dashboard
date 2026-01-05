@@ -1,0 +1,6 @@
+{
+  "transformerBabelPlugins": [["@atlaskit/tokens/babel-plugin"]],
+  "extract": true,
+  "inlineCss": true,
+  "sortShorthand": true
+}

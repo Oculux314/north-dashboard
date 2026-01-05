@@ -13,19 +13,25 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@atlaskit/css-reset": "^7.3.10",
+    "@atlaskit/tokens": "^9.1.0",
     "convex": "^1.31.0",
     "dotenv": "^17.2.3",
-    "react": "^19.2.1",
-    "react-dom": "^19.2.1",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
     "zod": "^4.3.5"
   },
   "devDependencies": {
+    "@atlaskit/eslint-plugin-design-system": "^13.30.0",
+    "@compiled/babel-plugin": "^0.38.1",
+    "@compiled/babel-plugin-strip-runtime": "^0.38.0",
+    "@compiled/parcel-config": "^0.5.6",
     "@convex-dev/eslint-plugin": "^1.1.1",
     "@eslint/js": "^9.39.1",
     "@tailwindcss/vite": "^4.1.17",
     "@types/node": "^24.10.4",
-    "@types/react": "^19.2.6",
-    "@types/react-dom": "^19.2.3",
+    "@types/react": "18.2.0",
+    "@types/react-dom": "18.2.0",
     "@vitejs/plugin-react": "^5.1.2",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
@@ -34,7 +40,7 @@
     "npm-run-all2": "^8.0.4",
     "prettier": "^3.6.2",
     "tailwindcss": "^4.1.17",
-    "typescript": "~5.9.3",
+    "typescript": "~5.4.0",
     "typescript-eslint": "^8.47.0",
     "vite": "^7.2.7"
   }
