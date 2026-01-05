@@ -1,0 +1,13 @@
+diff --git a/node_modules/@compiled/vite-plugin/dist/esm/index.js b/node_modules/@compiled/vite-plugin/dist/esm/index.js
+index fe8c758..d0f01a5 100644
+--- a/node_modules/@compiled/vite-plugin/dist/esm/index.js
++++ b/node_modules/@compiled/vite-plugin/dist/esm/index.js
+@@ -10,7 +10,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
+ import { parseAsync, transformFromAstAsync } from '@babel/core';
+ import { sort } from '@compiled/css';
+ import { DEFAULT_IMPORT_SOURCES, DEFAULT_PARSER_BABEL_PLUGINS, toBoolean } from '@compiled/utils';
+-import { createDefaultResolver } from './utils';
++import { createDefaultResolver } from './utils.js';
+ /**
+  * Compiled Vite plugin.
+  *
