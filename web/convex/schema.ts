@@ -1,12 +1,13 @@
 import { defineSchema, defineTable } from "convex/server";
-import { v } from "convex/values";
+import { Infer, v } from "convex/values";
 
-// The schema is entirely optional.
-// You can delete this file (schema.ts) and the
-// app will continue to work.
-// The schema provides more precise TypeScript types.
-export default defineSchema({
-  numbers: defineTable({
-    value: v.number(),
-  }),
-});
+const schema = {
+  logs: defineTable({
+    timestamp: v.number(),
+    voltage: v.number(),
+    current: v.number(),
+  }).index("by_timestamp", ["timestamp"]),
+};
+
+export default defineSchema(schema);
+export type Log = Infer<typeof schema.logs.validator>;
