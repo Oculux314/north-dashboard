@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "postinstall": "patch-package",
     "dev": "npm-run-all --parallel dev:frontend dev:backend",
     "dev:frontend": "vite --open",
     "dev:backend": "convex dev",
@@ -13,11 +14,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@atlaskit/breadcrumbs": "^15.3.16",
     "@atlaskit/css-reset": "^7.3.10",
+    "@atlaskit/heading": "^5.2.16",
+    "@atlaskit/icon": "^29.3.2",
+    "@atlaskit/lozenge": "^13.3.0",
     "@atlaskit/navigation-system": "^5.18.0",
+    "@atlaskit/page-header": "^12.1.15",
+    "@atlaskit/primitives": "^17.0.0",
     "@atlaskit/tokens": "^9.1.0",
     "@compiled/react": "^0.19.0",
-    "convex": "^1.31.0",
+    "convex": "^1.31.3",
     "dotenv": "^17.2.3",
     "react": "18.2.0",
     "react-dom": "18.2.0",
