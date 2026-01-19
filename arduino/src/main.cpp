@@ -138,12 +138,18 @@ void updateLed() {
 // MARK: READINGS
 
 void updateReadings() {
+  if (!batchReadingsBuffer.empty() && state.wifiState == ONLINE) {
+    // transmitBatch();
+  }
+
   if (millis() > state.nextBatchMillis) {
     // Store batch
     Reading avgReading;
     avgReading.voltage = readingSum.voltage / readingCount;
     avgReading.current = readingSum.current / readingCount;
     batchReadingsBuffer.push(avgReading);
+    Serial.printf("Batch stored: V=%f, I=%f\n", avgReading.voltage,
+                  avgReading.current);
     // Reset
     readingSum = Reading();
     readingCount = 0;
@@ -156,13 +162,21 @@ void updateReadings() {
   readingCount++;
 }
 
+// VREF=3.3V, ADC_MAX=4096 R1=1.0M, R2=0.2M
+float VOLTAGE_RATIO = 3.3 / 4096.0 * (10 + 2) / 2.0;
 float readVoltage() {
-  float volts = float(analogRead(VOLTAGE_PIN));
-  // Serial.printf("Volts: %f\n", volts);
-  return volts;
+  int reading = analogRead(VOLTAGE_PIN);
+  float voltage = ((reading + 0.5) * VOLTAGE_RATIO);
+  return voltage;
 }
 
-float readCurrent() { return analogRead(CURRENT_PIN); }
+// VREF=3.3V, ADC_MAX=4096 R1=1M, R2=1M, 5V = 300A
+float CURRENT_RATIO = 3.3 / 4096.0 * (1 + 1) / 1.0 * 300 / 5.0;
+float readCurrent() {
+  int reading = analogRead(CURRENT_PIN);
+  float current = ((reading + 0.5) * CURRENT_RATIO);
+  return current;
+}
 
 // MARK: WIFI TRANSMISSION
 
