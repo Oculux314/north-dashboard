@@ -7,6 +7,7 @@
 
 const String WIFI_SSID = "WDG";
 const String WIFI_PASSWORD = "strawberry";
+const char* BACKEND_SERVER = "www.google.com";
 
 const int BATCH_MILLIS = 1000;
 
@@ -36,12 +37,14 @@ std::vector<Reading> readingsLog;
 
 // MARK: DECLARATIONS
 
+void switchLedState(WifiState newState);
+
+void updateWifi();
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void initWifi();
 
 void updateLed();
-void switchLedState(WifiState newState);
 
 void updateReadings();
 Reading createReading();
@@ -72,10 +75,18 @@ void setup() {
 
 void loop() {
   updateLed();
+  updateWifi();
   updateReadings();
 }
 
 // MARK: WIFI
+
+void updateWifi() {
+  switch (state.wifiState) {
+    default:
+      break;
+  }
+}
 
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
   switchLedState(ONLINE_LED);
