@@ -37,7 +37,7 @@ std::vector<Reading> readingsLog;
 
 // MARK: DECLARATIONS
 
-void switchLedState(WifiState newState);
+void switchState(WifiState newState);
 
 void updateWifi();
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info);
@@ -79,6 +79,21 @@ void loop() {
   updateReadings();
 }
 
+// MARK: SWITCH STATE
+
+void switchState(WifiState newState) {
+  switch (newState) {
+    case OFFLINE:
+      break;
+    case ONLINE_LED:
+      state.wifiConnectedEndMillis = millis() + 500;
+      break;
+    case ONLINE:
+      break;
+  }
+  state.wifiState = newState;
+}
+
 // MARK: WIFI
 
 void updateWifi() {
@@ -89,12 +104,12 @@ void updateWifi() {
 }
 
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
-  switchLedState(ONLINE_LED);
+  switchState(ONLINE_LED);
 }
 
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
   initWifi();
-  switchLedState(OFFLINE);
+  switchState(OFFLINE);
 }
 
 void initWifi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
@@ -109,26 +124,13 @@ void updateLed() {
     case ONLINE_LED:
       digitalWrite(LED_PIN, millis() % 100 < 25 ? HIGH : LOW);
       if (millis() > state.wifiConnectedEndMillis) {
-        switchLedState(ONLINE);
+        switchState(ONLINE);
       }
       break;
     case ONLINE:
       digitalWrite(LED_PIN, LOW);
       break;
   }
-}
-
-void switchLedState(WifiState newState) {
-  switch (newState) {
-    case OFFLINE:
-      break;
-    case ONLINE_LED:
-      state.wifiConnectedEndMillis = millis() + 500;
-      break;
-    case ONLINE:
-      break;
-  }
-  state.wifiState = newState;
 }
 
 // MARK: READINGS
