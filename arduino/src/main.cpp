@@ -16,7 +16,7 @@ const int CURRENT_PIN = 33;
 
 // MARK: STATE
 
-enum LedState { WIFI_CONNECTING, WIFI_CONNECTED, IDLE };
+enum WifiState { OFFLINE, ONLINE_LED, ONLINE };
 
 struct Reading {
   float voltage;
@@ -24,7 +24,7 @@ struct Reading {
 };
 
 struct State {
-  LedState ledState = WIFI_CONNECTING;
+  WifiState wifiState = OFFLINE;
   int wifiConnectedEndMillis = 0;
   int nextBatchMillis = 0;
 };
@@ -41,7 +41,7 @@ void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void initWiFi();
 
 void updateLed();
-void switchLedState(LedState newState);
+void switchLedState(WifiState newState);
 
 void updateReadings();
 Reading createReading();
@@ -77,12 +77,12 @@ void loop() {
 // MARK: WIFI
 
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
-  switchLedState(WIFI_CONNECTED);
+  switchLedState(ONLINE_LED);
 }
 
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
   initWiFi();
-  switchLedState(WIFI_CONNECTING);
+  switchLedState(OFFLINE);
 }
 
 void initWiFi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
@@ -90,33 +90,33 @@ void initWiFi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
 // MARK: LED
 
 void updateLed() {
-  switch (state.ledState) {
-    case WIFI_CONNECTING:
+  switch (state.wifiState) {
+    case OFFLINE:
       digitalWrite(LED_PIN, millis() % 2000 < 200 ? HIGH : LOW);
       break;
-    case WIFI_CONNECTED:
+    case ONLINE_LED:
       digitalWrite(LED_PIN, millis() % 100 < 25 ? HIGH : LOW);
       if (millis() > state.wifiConnectedEndMillis) {
-        switchLedState(IDLE);
+        switchLedState(ONLINE);
       }
       break;
-    case IDLE:
+    case ONLINE:
       digitalWrite(LED_PIN, LOW);
       break;
   }
 }
 
-void switchLedState(LedState newState) {
+void switchLedState(WifiState newState) {
   switch (newState) {
-    case WIFI_CONNECTING:
+    case OFFLINE:
       break;
-    case WIFI_CONNECTED:
+    case ONLINE_LED:
       state.wifiConnectedEndMillis = millis() + 500;
       break;
-    case IDLE:
+    case ONLINE:
       break;
   }
-  state.ledState = newState;
+  state.wifiState = newState;
 }
 
 // MARK: READINGS
