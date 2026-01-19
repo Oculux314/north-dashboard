@@ -47,7 +47,7 @@ void updateReadings();
 Reading createReading();
 float readVoltage();
 float readCurrent();
-float avg(const std::vector<float>& readings);
+Reading avg(const std::vector<Reading>& readings);
 
 // MARK: SETUP
 
