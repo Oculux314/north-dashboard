@@ -38,7 +38,7 @@ std::vector<Reading> readingsLog;
 
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info);
-void initWiFi();
+void initWifi();
 
 void updateLed();
 void switchLedState(WifiState newState);
@@ -57,14 +57,15 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   pinMode(VOLTAGE_PIN, INPUT);
   pinMode(CURRENT_PIN, INPUT);
-
   digitalWrite(LED_PIN, HIGH);
+
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
-  initWiFi();
   WiFi.onEvent(onWifiConnect, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
   WiFi.onEvent(onWifiDisconnect,
                WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+  initWifi();
+  state.nextBatchMillis = millis() + BATCH_MILLIS;
 }
 
 // MARK: LOOP
@@ -81,11 +82,11 @@ void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
 }
 
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
-  initWiFi();
+  initWifi();
   switchLedState(OFFLINE);
 }
 
-void initWiFi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
+void initWifi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
 
 // MARK: LED
 
