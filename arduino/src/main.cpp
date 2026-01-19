@@ -1,15 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <vector>
-
-void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info);
-void initWiFi();
-void flashLedBlocking(int count);
-void blinkLed(int highMillis);
-void updateLed();
-float readVoltage();
-float readCurrent();
-float avg(const std::vector<float> &readings);
+#include <queue>
 
 // MARK: CONSTANTS
 
@@ -17,7 +9,6 @@ const String WIFI_SSID = "WDG";
 const String WIFI_PASSWORD = "strawberry";
 
 const int BATCH_MILLIS = 1000;
-const int LED_HIGH_MILLIS = 100;
 
 const int LED_PIN = 25;
 const int VOLTAGE_PIN = 32;
@@ -25,114 +16,130 @@ const int CURRENT_PIN = 33;
 
 // MARK: STATE
 
-struct State
-{
-  bool wifiConnected = false;
-  int nextBatchMillis = 0;
-  int nextLedLowMillis = 0;
+enum LedState { WIFI_CONNECTING, WIFI_CONNECTED, IDLE };
+
+struct Reading {
+  float voltage;
+  float current;
 };
 
-State state;
+struct State {
+  LedState ledState = WIFI_CONNECTING;
+  int wifiConnectedEndMillis = 0;
+  int nextBatchMillis = 0;
+};
+
+volatile State state;
+// I don't wanna deal with memory allocations xD
+std::queue<Reading> batchReadingsBuffer;
+std::vector<Reading> readingsLog;
+
+// MARK: DECLARATIONS
+
+void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info);
+void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info);
+void initWiFi();
+
+void updateLed();
+void switchLedState(LedState newState);
+
+void updateReadings();
+Reading createReading();
+float readVoltage();
+float readCurrent();
+float avg(const std::vector<float>& readings);
 
 // MARK: SETUP
 
-void setup()
-{
+void setup() {
   Serial.begin(115200);
+
   pinMode(LED_PIN, OUTPUT);
   pinMode(VOLTAGE_PIN, INPUT);
   pinMode(CURRENT_PIN, INPUT);
 
   digitalWrite(LED_PIN, HIGH);
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
   initWiFi();
-  WiFi.onEvent(onWifiDisconnect,           WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
-
-  state.nextBatchMillis = millis();
+  WiFi.onEvent(onWifiConnect, WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
+  WiFi.onEvent(onWifiDisconnect,
+               WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 }
 
 // MARK: LOOP
 
-std::vector<float> voltageReadings;
-std::vector<float> currentReadings;
-
-void loop()
-{
-  voltageReadings.clear();
-  currentReadings.clear();
-  state.nextBatchMillis += BATCH_MILLIS;
-
-  while (millis() < state.nextBatchMillis)
-  {
-    updateLed();
-    voltageReadings.push_back(readVoltage());
-    currentReadings.push_back(readCurrent());
-  }
-
-  float avgVoltage = avg(voltageReadings);
-  float avgCurrent = avg(currentReadings);
-  Serial.printf("Avg Voltage: %f\n", avgVoltage);
-  Serial.printf("Avg Current: %f\n", avgCurrent);
-
-  // blinkLed(LED_HIGH_MILLIS);
+void loop() {
+  updateLed();
+  updateReadings();
 }
 
-// MARK: ON D/C
+// MARK: WIFI
+
+void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switchLedState(WIFI_CONNECTED);
+}
 
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
-  Serial.println("Disconnected from WiFi access point");
-  Serial.print("WiFi lost connection. Reason: ");
-  Serial.println(info.wifi_sta_disconnected.reason);
-  Serial.println("Trying to Reconnect");
   initWiFi();
+  switchLedState(WIFI_CONNECTING);
 }
 
-// MARK: HELPERS
+void initWiFi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
 
-void initWiFi()
-{
-  WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.print("Connecting to WiFi ..");
-  while (WiFi.status() != WL_CONNECTED)
-  {
-    Serial.print('.');
-    digitalWrite(LED_PIN, HIGH);
-    delay(500);
-    digitalWrite(LED_PIN, LOW);
-    delay(500);
-  }
-  Serial.println(" " + WiFi.localIP());
-  flashLedBlocking(5);
-}
+// MARK: LED
 
-void flashLedBlocking(int count)
-{
-  for (int i = 0; i < count; i++)
-  {
-    digitalWrite(LED_PIN, HIGH);
-    delay(50);
-    digitalWrite(LED_PIN, LOW);
-    delay(50);
+void updateLed() {
+  switch (state.ledState) {
+    case WIFI_CONNECTING:
+      digitalWrite(LED_PIN, millis() % 2000 < 200 ? HIGH : LOW);
+      break;
+    case WIFI_CONNECTED:
+      digitalWrite(LED_PIN, millis() % 100 < 25 ? HIGH : LOW);
+      if (millis() > state.wifiConnectedEndMillis) {
+        switchLedState(IDLE);
+      }
+      break;
+    case IDLE:
+      digitalWrite(LED_PIN, LOW);
+      break;
   }
 }
 
-void blinkLed(int highMillis) { state.nextLedLowMillis = millis() + highMillis; }
-
-void updateLed()
-{
-  if (millis() >= state.nextLedLowMillis)
-  {
-    digitalWrite(LED_PIN, LOW);
+void switchLedState(LedState newState) {
+  switch (newState) {
+    case WIFI_CONNECTING:
+      break;
+    case WIFI_CONNECTED:
+      state.wifiConnectedEndMillis = millis() + 500;
+      break;
+    case IDLE:
+      break;
   }
-  else
-  {
-    digitalWrite(LED_PIN, HIGH);
-  }
+  state.ledState = newState;
 }
 
-float readVoltage()
-{
+// MARK: READINGS
+
+void updateReadings() {
+  if (millis() > state.nextBatchMillis) {
+    Reading avgReading = avg(readingsLog);
+    batchReadingsBuffer.push(avgReading);
+    readingsLog.clear();
+    state.nextBatchMillis += BATCH_MILLIS;
+  }
+
+  readingsLog.push_back(createReading());
+}
+
+Reading createReading() {
+  Reading reading;
+  reading.voltage = readVoltage();
+  reading.current = readCurrent();
+  return reading;
+}
+
+float readVoltage() {
   float volts = float(analogRead(VOLTAGE_PIN));
   // Serial.printf("Volts: %f\n", volts);
   return volts;
@@ -140,17 +147,16 @@ float readVoltage()
 
 float readCurrent() { return analogRead(CURRENT_PIN); }
 
-float avg(const std::vector<float> &readings)
-{
-  if (readings.empty())
-  {
-    return 0.0;
+Reading avg(const std::vector<Reading>& readings) {
+  if (readings.empty()) {
+    return { voltage: 0.0, current: 0.0};
   }
-  float sum = 0.0;
-  for (float reading : readings)
-  {
-    sum += reading;
+  float voltageSum = 0.0;
+  float currentSum = 0.0;
+  for (const Reading& reading : readings) {
+    voltageSum += reading.voltage;
+    currentSum += reading.current;
   }
-  Serial.printf("Sum: %f, Count: %zu\n", sum, readings.size());
-  return sum / readings.size();
+  Serial.printf("Sum: %f, Count: %zu\n", voltageSum, readings.size());
+  return { voltage: voltageSum / readings.size(), current: currentSum / readings.size() };
 }
