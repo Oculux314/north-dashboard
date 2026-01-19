@@ -10,7 +10,7 @@ const String WIFI_SSID = "WDG";
 const String WIFI_PASSWORD = "strawberry";
 const char* BACKEND_SERVER = "www.google.com";
 
-const int BATCH_MILLIS = 1000;
+const int BATCH_MILLIS = 10000;
 
 const int LED_PIN = 25;
 const int VOLTAGE_PIN = 32;
@@ -21,8 +21,8 @@ const int CURRENT_PIN = 33;
 enum WifiState { OFFLINE, ONLINE_LED, ONLINE, TRANSMITTING };
 
 struct Reading {
-  float voltage;
-  float current;
+  float voltage = 0.0;
+  float current = 0.0;
 };
 
 struct State {
@@ -34,7 +34,8 @@ struct State {
 volatile State state;
 // I don't wanna deal with memory allocations xD
 std::queue<Reading> batchReadingsBuffer;
-std::vector<Reading> readingsLog;
+Reading readingSum;
+int readingCount = 0;
 
 // MARK: DECLARATIONS
 
@@ -49,10 +50,8 @@ void transmitBatch();
 void updateLed();
 
 void updateReadings();
-Reading createReading();
 float readVoltage();
 float readCurrent();
-Reading avg(const std::vector<Reading>& readings);
 
 // MARK: SETUP
 
@@ -140,20 +139,21 @@ void updateLed() {
 
 void updateReadings() {
   if (millis() > state.nextBatchMillis) {
-    Reading avgReading = avg(readingsLog);
+    // Store batch
+    Reading avgReading;
+    avgReading.voltage = readingSum.voltage / readingCount;
+    avgReading.current = readingSum.current / readingCount;
     batchReadingsBuffer.push(avgReading);
-    readingsLog.clear();
+    // Reset
+    readingSum = Reading();
+    readingCount = 0;
     state.nextBatchMillis += BATCH_MILLIS;
   }
 
-  readingsLog.push_back(createReading());
-}
-
-Reading createReading() {
-  Reading reading;
-  reading.voltage = readVoltage();
-  reading.current = readCurrent();
-  return reading;
+  // Perform read
+  readingSum.voltage += readVoltage();
+  readingSum.current += readCurrent();
+  readingCount++;
 }
 
 float readVoltage() {
@@ -163,23 +163,6 @@ float readVoltage() {
 }
 
 float readCurrent() { return analogRead(CURRENT_PIN); }
-
-Reading avg(const std::vector<Reading>& readings) {
-  if (readings.empty()) {
-    return {voltage : 0.0, current : 0.0};
-  }
-  float voltageSum = 0.0;
-  float currentSum = 0.0;
-  for (const Reading& reading : readings) {
-    voltageSum += reading.voltage;
-    currentSum += reading.current;
-  }
-  // Serial.printf("Sum: %f, Count: %zu\n", voltageSum, readings.size());
-  return {
-    voltage : voltageSum / readings.size(),
-    current : currentSum / readings.size()
-  };
-}
 
 // MARK: WIFI TRANSMISSION
 
