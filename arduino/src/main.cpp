@@ -163,7 +163,7 @@ float readCurrent() { return analogRead(CURRENT_PIN); }
 
 Reading avg(const std::vector<Reading>& readings) {
   if (readings.empty()) {
-    return { voltage: 0.0, current: 0.0};
+    return {voltage : 0.0, current : 0.0};
   }
   float voltageSum = 0.0;
   float currentSum = 0.0;
@@ -171,6 +171,45 @@ Reading avg(const std::vector<Reading>& readings) {
     voltageSum += reading.voltage;
     currentSum += reading.current;
   }
-  Serial.printf("Sum: %f, Count: %zu\n", voltageSum, readings.size());
-  return { voltage: voltageSum / readings.size(), current: currentSum / readings.size() };
+  // Serial.printf("Sum: %f, Count: %zu\n", voltageSum, readings.size());
+  return {
+    voltage : voltageSum / readings.size(),
+    current : currentSum / readings.size()
+  };
 }
+
+// MARK: WIFI TRANSMISSION
+
+void transmitBatch() {
+  // if (batchReadingsBuffer.empty()) {
+  //   return;
+  // }
+  // Reading reading = batchReadingsBuffer.front();
+  // batchReadingsBuffer.pop();
+
+  // WiFiClient client;
+  // client.connect(BACKEND_SERVER, 80);
+
+  // if (client.connected()) {
+  //   // Make a HTTP request:
+  //   client.printf("GET /update?voltage=%f&current=%f HTTP/1.0\r\n",
+  //                 reading.voltage, reading.current);
+  //   client.println();
+  // } else {
+  //   Serial.println("Not connected to backend server");
+  // }
+}
+
+// if (client.connect(BACKEND_SERVER, 80)) {
+//   Serial.println("connected");
+//   // Make a HTTP request:
+//   client.println("GET /search?q=arduino HTTP/1.0");
+//   client.println();
+// } else {
+//   Serial.println("connection failed");
+// }
+
+// if (client.available()) {
+//   char c = client.read();
+//   Serial.print(c);
+// }
