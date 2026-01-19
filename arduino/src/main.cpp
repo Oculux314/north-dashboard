@@ -1,7 +1,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <vector>
+
 #include <queue>
+#include <vector>
 
 // MARK: CONSTANTS
 
@@ -17,7 +18,7 @@ const int CURRENT_PIN = 33;
 
 // MARK: STATE
 
-enum WifiState { OFFLINE, ONLINE_LED, ONLINE };
+enum WifiState { OFFLINE, ONLINE_LED, ONLINE, TRANSMITTING };
 
 struct Reading {
   float voltage;
@@ -43,6 +44,7 @@ void updateWifi();
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void initWifi();
+void transmitBatch();
 
 void updateLed();
 
@@ -60,7 +62,7 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   pinMode(VOLTAGE_PIN, INPUT);
   pinMode(CURRENT_PIN, INPUT);
-  digitalWrite(LED_PIN, HIGH);
+  digitalWrite(LED_PIN, HIGH);  // In case smth really breaks
 
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -82,19 +84,21 @@ void loop() {
 // MARK: SWITCH STATE
 
 void switchState(WifiState newState) {
+  // Serial.printf("State: %d\n", newState);
   switch (newState) {
     case OFFLINE:
+      initWifi();
       break;
     case ONLINE_LED:
       state.wifiConnectedEndMillis = millis() + 500;
       break;
-    case ONLINE:
+    default:
       break;
   }
   state.wifiState = newState;
 }
 
-// MARK: WIFI
+// MARK: INIT WIFI
 
 void updateWifi() {
   switch (state.wifiState) {
@@ -108,7 +112,6 @@ void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
 }
 
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
-  initWifi();
   switchState(OFFLINE);
 }
 
@@ -127,7 +130,7 @@ void updateLed() {
         switchState(ONLINE);
       }
       break;
-    case ONLINE:
+    default:
       digitalWrite(LED_PIN, LOW);
       break;
   }
