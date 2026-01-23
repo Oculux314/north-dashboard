@@ -1,0 +1,7 @@
+# POST https://grateful-ibis-516.convex.cloud/api/mutation HTTP/1.1
+POST /api/mutation HTTP/1.1
+Host: grateful-ibis-516.convex.cloud
+Content-Type: application/json
+Content-Length: 104
+
+{"path":"api:postLog","args":{"timestamp":125146,"voltage":0.002418,"current":0.048340},"format":"json"}

@@ -1,5 +1,5 @@
 #include <Arduino.h>
-#include <WiFi.h>
+#include <WiFiClientSecure.h>
 
 #include <queue>
 #include <vector>
@@ -8,7 +8,7 @@
 
 const String WIFI_SSID = "WDG";
 const String WIFI_PASSWORD = "strawberry";
-const char* BACKEND_SERVER = "www.google.com";
+const char* BACKEND_SERVER = "grateful-ibis-516.convex.cloud";
 
 const int BATCH_MILLIS = 10000;
 
@@ -25,15 +25,21 @@ struct Reading {
   float current = 0.0;
 };
 
+struct BatchReading {
+  float voltage = 0.0;
+  float current = 0.0;
+  int timestamp = 0;
+};
+
 struct State {
   WifiState wifiState = OFFLINE;
-  int wifiConnectedEndMillis = 0;
-  int nextBatchMillis = 0;
+  unsigned long wifiConnectedEndMillis = 0;
+  unsigned long nextBatchMillis = 0;
 };
 
 volatile State state;
 // I don't wanna deal with memory allocations xD
-std::queue<Reading> batchReadingsBuffer;
+std::queue<BatchReading> batchReadingsBuffer;
 Reading readingSum;
 int readingCount = 0;
 
@@ -139,14 +145,16 @@ void updateLed() {
 
 void updateReadings() {
   if (!batchReadingsBuffer.empty() && state.wifiState == ONLINE) {
-    // transmitBatch();
+    transmitBatch();
   }
 
   if (millis() > state.nextBatchMillis) {
     // Store batch
-    Reading avgReading;
+    BatchReading avgReading;
     avgReading.voltage = readingSum.voltage / readingCount;
     avgReading.current = readingSum.current / readingCount;
+    avgReading.timestamp = state.nextBatchMillis -
+                           (BATCH_MILLIS / 2);  // Approximate middle of batch
     batchReadingsBuffer.push(avgReading);
     Serial.printf("Batch stored: V=%f, I=%f\n", avgReading.voltage,
                   avgReading.current);
@@ -181,35 +189,50 @@ float readCurrent() {
 // MARK: WIFI TRANSMISSION
 
 void transmitBatch() {
-  // if (batchReadingsBuffer.empty()) {
-  //   return;
-  // }
-  // Reading reading = batchReadingsBuffer.front();
-  // batchReadingsBuffer.pop();
+  if (batchReadingsBuffer.empty()) {
+    return;
+  }
+  BatchReading reading = batchReadingsBuffer.front();
+  batchReadingsBuffer.pop();
 
-  // WiFiClient client;
-  // client.connect(BACKEND_SERVER, 80);
+  WiFiClientSecure client;
+  client.setInsecure();  // Accept any certificate
+  if (!client.connect(BACKEND_SERVER, 443)) {
+    Serial.println("Not connected to backend server");
+    return;
+  }
 
-  // if (client.connected()) {
-  //   // Make a HTTP request:
-  //   client.printf("GET /update?voltage=%f&current=%f HTTP/1.0\r\n",
-  //                 reading.voltage, reading.current);
-  //   client.println();
-  // } else {
-  //   Serial.println("Not connected to backend server");
+  // Needs to be fast in a loop (128 is overkill - body is usually 104 chars
+  // long)
+  char body[128];
+  int bodyLen =
+      snprintf(body, sizeof(body),
+               "{\"path\":\"api:postLog\",\"args\":{\"timestamp\":%u,"
+               "\"voltage\":%.6f,\"current\":%.6f},\"format\":\"json\"}",
+               reading.timestamp, reading.voltage, reading.current);
+
+  Serial.printf(
+      "POST /api/mutation HTTP/1.1\r\n"
+      "Host: grateful-ibis-516.convex.cloud\r\n"
+      "Content-Type: application/json\r\n"
+      "Content-Length: %d\r\n"
+      "\r\n"
+      "%s\r\n",
+      bodyLen, body);
+  client.printf(
+      "POST /api/mutation HTTP/1.1\r\n"
+      "Host: grateful-ibis-516.convex.cloud\r\n"
+      "Content-Type: application/json\r\n"
+      "Content-Length: %d\r\n"
+      "\r\n"
+      "%s\r\n",
+      bodyLen, body);
+
+  // unsigned long start = millis();
+  // while (client.connected() && (millis() - start < 5000)) {  // 5s timeout
+  //   while (client.available()) {
+  //     Serial.println(client.readStringUntil('\n'));
+  //   }
   // }
+  // client.stop();
 }
-
-// if (client.connect(BACKEND_SERVER, 80)) {
-//   Serial.println("connected");
-//   // Make a HTTP request:
-//   client.println("GET /search?q=arduino HTTP/1.0");
-//   client.println();
-// } else {
-//   Serial.println("connection failed");
-// }
-
-// if (client.available()) {
-//   char c = client.read();
-//   Serial.print(c);
-// }
