@@ -11,16 +11,20 @@ const String WIFI_PASSWORD = "strawberry";
 const char* BACKEND_SERVER = "grateful-ibis-516.convex.cloud";
 
 const int BATCH_MILLIS = 10000;
+const int REQUEST_TIMEOUT_MILLIS = 5000;
+const int REQUEST_MAX_RETRIES = 3;
+const int MAX_RESPONSE_SIZE = 512;
 
 const int LED_PIN = 25;
 const int VOLTAGE_PIN = 32;
 const int CURRENT_PIN = 33;
 
 ESP32Time rtc(0);
+WiFiClientSecure client;
 
 // MARK: STATE
 
-enum WifiState { OFFLINE, ONLINE_LED, ONLINE, TRANSMITTING };
+enum WifiState { OFFLINE, PENDING_TIME_SYNC, ONLINE, TRANSMITTING };
 
 struct Reading {
   float voltage = 0.0;
@@ -33,16 +37,26 @@ struct BatchReading {
   unsigned long long timestamp = 0; // millis past epoch (tempory values before RTC sync)
 };
 
+struct Request {
+  BatchReading reading;
+  unsigned long long lastSentMillis = 0;
+  int retries = 0;
+  char response[MAX_RESPONSE_SIZE];
+  int responseLen = 0;
+};
+
 struct State {
-  WifiState wifiState = OFFLINE;
-  unsigned long long wifiConnectedEndMillis = 0;
+  volatile WifiState wifiState = OFFLINE;
+  volatile unsigned long long rtcSyncFlashEndMillis = 0;
   unsigned long long nextBatchMillis = 0;
   // Sync RTC to millis
   unsigned long millisSynced = 0;
   unsigned long rtcSynced = 0;
+  Request currentRequest;
 };
 
-volatile State state;
+State state;
+
 // I don't wanna deal with memory allocations xD
 std::queue<BatchReading> batchReadingsBuffer;
 Reading readingSum;
@@ -63,7 +77,12 @@ void updateReadings();
 float readVoltage();
 float readCurrent();
 
-WiFiClientSecure transmitBatch();
+void transmitBatch(BatchReading reading);
+void readTransmitResponse();
+bool requestSucceeded(char* response);
+void retryTransmittion();
+
+void updateRtc();
 bool rtcSynced();
 unsigned long long getMillisPastEpoch();
 void onRtcSync();
@@ -86,6 +105,7 @@ void setup() {
   WiFi.onEvent(onWifiDisconnect,
                WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   initWifi();
+  client.setInsecure();  // Accept any SSL certificate
 
   // Time
   configTime(0, 0, "pool.ntp.org", "time.nist.gov"); // Periodically syncs RTC
@@ -96,6 +116,7 @@ void setup() {
 
 void loop() {
   updateLed();
+  updateRtc();
   updateWifi();
   updateReadings();
 }
@@ -103,12 +124,11 @@ void loop() {
 // MARK: SWITCH STATE
 
 void switchState(WifiState newState) {
+  Serial.printf("Switching WiFi state from %d to %d\n", state.wifiState,
+                newState);
   switch (newState) {
     case OFFLINE:
       initWifi();
-      break;
-    case ONLINE_LED:
-      state.wifiConnectedEndMillis = getMillisPastEpoch() + 500;
       break;
     default:
       break;
@@ -126,7 +146,7 @@ void updateWifi() {
 }
 
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
-  switchState(ONLINE_LED);
+  switchState(PENDING_TIME_SYNC);
 }
 
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
@@ -138,18 +158,35 @@ void initWifi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
 // MARK: LED
 
 void updateLed() {
+  Serial.printf("LED State Update: WiFi State %d (%llu)\n", state.wifiState, getMillisPastEpoch());
+  if (getMillisPastEpoch() < state.rtcSyncFlashEndMillis) {
+    Serial.println("RTC Sync Flash");
+    // Flash 5 times to indicate RTC sync ready state
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, getMillisPastEpoch() % 100 < 25 ? HIGH : LOW);
+    return;
+  }
+
   switch (state.wifiState) {
     case OFFLINE:
+      pinMode(LED_PIN, OUTPUT);
       digitalWrite(LED_PIN, getMillisPastEpoch() % 2000 < 200 ? HIGH : LOW);
       break;
-    case ONLINE_LED:
-      digitalWrite(LED_PIN, getMillisPastEpoch() % 100 < 25 ? HIGH : LOW);
-      if (getMillisPastEpoch() > state.wifiConnectedEndMillis) {
-        switchState(ONLINE);
-      }
+    case PENDING_TIME_SYNC:
+      pinMode(LED_PIN, OUTPUT);
+      digitalWrite(LED_PIN, getMillisPastEpoch() % 1000 < 200 ? HIGH : LOW);
+      break;
+    case ONLINE:
+      pinMode(LED_PIN, OUTPUT);
+      digitalWrite(LED_PIN, LOW);
+      break;
+    case TRANSMITTING:
+      analogWrite(LED_PIN, 1);
       break;
     default:
-      digitalWrite(LED_PIN, LOW);
+      // Should not happen
+      pinMode(LED_PIN, OUTPUT);
+      digitalWrite(LED_PIN, HIGH);
       break;
   }
 }
@@ -157,10 +194,21 @@ void updateLed() {
 // MARK: READINGS
 
 void updateReadings() {
-  if (!batchReadingsBuffer.empty() && state.wifiState == ONLINE) {
-    transmitBatch();
+  // Transmit (if needed)
+  if (!batchReadingsBuffer.empty() && state.wifiState == ONLINE &&
+      rtcSynced()) {
+    Serial.println("Attempting transmission of stored batch...");
+    BatchReading reading = batchReadingsBuffer.front();
+    batchReadingsBuffer.pop();  // Ignore failures lol
+    transmitBatch(reading);
   }
 
+  // Read transmit response (if needed)
+  if (state.wifiState == TRANSMITTING) {
+    readTransmitResponse();
+  }
+
+  // Create batch (if needed)
   unsigned long long currentMillis = getMillisPastEpoch();
   if (currentMillis > state.nextBatchMillis) {
     // Store batch
@@ -180,10 +228,6 @@ void updateReadings() {
       // Handle time sync
       state.nextBatchMillis = currentMillis + BATCH_MILLIS;
     }
-
-    Serial.printf("CurrentMillis: %llu\n", currentMillis);
-    Serial.printf("BATCH_MILLIS:  %d\n", BATCH_MILLIS);
-    Serial.printf("Next batch at: %llu\n", state.nextBatchMillis);
   }
 
   // Perform read
@@ -210,21 +254,19 @@ float readCurrent() {
 
 // MARK: WIFI TRANSMISSION
 
-WiFiClientSecure transmitBatch() {
-  if (batchReadingsBuffer.empty() || !rtcSynced()) {
-    return;
-  }
-  if (state.rtcSynced == 0) {
-    // First time RTC detected as synced
-    onRtcSync();
-  }
-  Serial.printf("Transmitting at time %llu\n", getMillisPastEpoch());
+void transmitBatch(BatchReading reading) {
+  Serial.printf("Transmitting batch: V=%f, I=%f, T=%llu\n", reading.voltage,
+                reading.current, reading.timestamp);
 
-  BatchReading reading = batchReadingsBuffer.front();
-  batchReadingsBuffer.pop(); // Ignore failures lol
+  // Setup request state
+  state.currentRequest.reading.current = reading.current;
+  state.currentRequest.reading.voltage = reading.voltage;
+  state.currentRequest.reading.timestamp = reading.timestamp;
+  state.currentRequest.lastSentMillis = getMillisPastEpoch();
+  state.currentRequest.retries = 0;
+  state.currentRequest.responseLen = 0;
+  switchState(TRANSMITTING);
 
-  WiFiClientSecure client;
-  client.setInsecure();  // Accept any certificate
   if (!client.connect(BACKEND_SERVER, 443)) {
     Serial.println("Not connected to backend server");
     return;
@@ -238,14 +280,6 @@ WiFiClientSecure transmitBatch() {
                "\"voltage\":%.6f,\"current\":%.6f},\"format\":\"json\"}",
                reading.timestamp, reading.voltage, reading.current);
 
-  // Serial.printf(
-  //     "POST /api/mutation HTTP/1.1\r\n"
-  //     "Host: grateful-ibis-516.convex.cloud\r\n"
-  //     "Content-Type: application/json\r\n"
-  //     "Content-Length: %d\r\n"
-  //     "\r\n"
-  //     "%s\r\n",
-  //     bodyLen, body);
   client.printf(
       "POST /api/mutation HTTP/1.1\r\n"
       "Host: grateful-ibis-516.convex.cloud\r\n"
@@ -254,19 +288,76 @@ WiFiClientSecure transmitBatch() {
       "\r\n"
       "%s\r\n",
       bodyLen, body);
+}
 
-  // unsigned long long start = getMillisPastEpoch();
-  // while (client.connected() && (getMillisPastEpoch() - start < 5000)) {  // 5s timeout
-  //   while (client.available()) {
-  //     Serial.println(client.readStringUntil('\n'));
-  //   }
-  // }
-  // client.stop();
+void readTransmitResponse() {
+  // Check status
+  bool isTimeout = getMillisPastEpoch() - state.currentRequest.lastSentMillis >
+                   REQUEST_TIMEOUT_MILLIS;
+  bool exceededResponseSize = state.currentRequest.responseLen >= MAX_RESPONSE_SIZE - 1;
+  if (exceededResponseSize) {
+    // Prevent overflow for null terminator
+    state.currentRequest.responseLen = MAX_RESPONSE_SIZE - 1;
+  }
 
-  return client;
+  if (!client.connected() || isTimeout || exceededResponseSize) {
+    Serial.println("Something happened...");
+    client.stop();
+    state.currentRequest.response[state.currentRequest.responseLen] = '\0'; // Ensure null-terminate exists
+    if (requestSucceeded(state.currentRequest.response)) {
+      Serial.println("Request succeeded.");
+      // Request succeeded
+      switchState(ONLINE);
+    } else if (state.currentRequest.retries < REQUEST_MAX_RETRIES) {
+      // Failed - retry
+      Serial.printf("Request failed, retrying... (attempt %d)\n",
+                    state.currentRequest.retries + 1);
+      retryTransmittion();
+    } else {
+      // Failed - give up
+      Serial.println("Request failed, giving up.");
+      switchState(ONLINE);
+    }
+  }
+
+  // Read
+  if (client.available()) {
+    state.currentRequest.response[state.currentRequest.responseLen++] =
+        client.read();
+  }
+}
+
+bool requestSucceeded(char* response) {
+  // Check for `"status":"success"` in response
+  char *strstrResult = strstr(response, "\"status\":\"success\"");
+  Serial.printf("strstr result: %s\n", strstrResult);
+  return strstrResult != nullptr;
+}
+
+void retryTransmittion() {
+  state.currentRequest.retries++;
+  state.currentRequest.lastSentMillis = getMillisPastEpoch();
+  state.currentRequest.responseLen = 0;
+  transmitBatch(state.currentRequest.reading);
 }
 
 // MARK: RTC
+
+void updateRtc() {
+  switch (state.wifiState) {
+    case PENDING_TIME_SYNC:
+      if (rtcSynced()) {
+        if (state.rtcSynced == 0) {
+          onRtcSync();
+        }
+        switchState(ONLINE);
+      }
+      break;
+    default:
+      break;
+  }
+  // Run onRtcSync once when RTC is synced
+}
 
 bool rtcSynced() {
   time_t now = rtc.getEpoch();
@@ -290,6 +381,7 @@ unsigned long long getMillisPastEpoch() {
 
 // Flags sync time and retroactively updates reading timestamps
 void onRtcSync() {
+  // Record sync time
   state.rtcSynced = rtc.getEpoch();
   state.millisSynced = millis();
 
@@ -305,4 +397,8 @@ void onRtcSync() {
   for (BatchReading& reading : tempBuffer) {
     batchReadingsBuffer.push(reading);
   }
+
+  // Flash LED to indicate RTC sync
+  state.rtcSyncFlashEndMillis = getMillisPastEpoch() + 500;
+  Serial.printf("Flash ends at millis %llu\n", state.rtcSyncFlashEndMillis);
 }
