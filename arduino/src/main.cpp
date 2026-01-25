@@ -66,7 +66,6 @@ int readingCount = 0;
 
 void switchState(WifiState newState);
 
-void updateWifi();
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void initWifi();
@@ -80,7 +79,9 @@ float readCurrent();
 void transmitBatch(BatchReading reading);
 void readTransmitResponse();
 bool requestSucceeded(char* response);
-void retryTransmittion();
+bool exceededResponseSize();
+bool requestFailed();
+void retryTransmission();
 
 void updateRtc();
 bool rtcSynced();
@@ -91,6 +92,7 @@ void onRtcSync();
 
 void setup() {
   Serial.begin(115200);
+  state.currentRequest.response[0] = '\0';
 
   // Pins
   pinMode(LED_PIN, OUTPUT);
@@ -117,7 +119,6 @@ void setup() {
 void loop() {
   updateLed();
   updateRtc();
-  updateWifi();
   updateReadings();
 }
 
@@ -137,13 +138,6 @@ void switchState(WifiState newState) {
 }
 
 // MARK: INIT WIFI
-
-void updateWifi() {
-  switch (state.wifiState) {
-    default:
-      break;
-  }
-}
 
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
   switchState(PENDING_TIME_SYNC);
@@ -225,7 +219,7 @@ void updateReadings() {
     readingCount = 0;
     state.nextBatchMillis += BATCH_MILLIS;
     if (state.nextBatchMillis < currentMillis) {
-      // Handle time sync
+      // Handle shift due to time sync
       state.nextBatchMillis = currentMillis + BATCH_MILLIS;
     }
   }
@@ -264,6 +258,7 @@ void transmitBatch(BatchReading reading) {
   state.currentRequest.reading.timestamp = reading.timestamp;
   state.currentRequest.lastSentMillis = getMillisPastEpoch();
   state.currentRequest.retries = 0;
+  state.currentRequest.response[0] = '\0';
   state.currentRequest.responseLen = 0;
   switchState(TRANSMITTING);
 
@@ -288,56 +283,77 @@ void transmitBatch(BatchReading reading) {
       "\r\n"
       "%s\r\n",
       bodyLen, body);
+
+  Serial.println("Request sent.");
 }
 
 void readTransmitResponse() {
-  // Check status
-  bool isTimeout = getMillisPastEpoch() - state.currentRequest.lastSentMillis >
-                   REQUEST_TIMEOUT_MILLIS;
-  bool exceededResponseSize = state.currentRequest.responseLen >= MAX_RESPONSE_SIZE - 1;
-  if (exceededResponseSize) {
-    // Prevent overflow for null terminator
-    state.currentRequest.responseLen = MAX_RESPONSE_SIZE - 1;
+  Serial.println("Reading transmit response...");
+  Serial.printf("Response length so far: %d\n",
+                state.currentRequest.responseLen);
+
+  // Read
+  if (client.connected() && client.available() && !exceededResponseSize()) {
+    Serial.println("Reading byte from client...");
+    char c = client.read();
+    state.currentRequest.response[state.currentRequest.responseLen++] = c;
+    state.currentRequest.response[state.currentRequest.responseLen] = '\0';
   }
 
-  if (!client.connected() || isTimeout || exceededResponseSize) {
+  Serial.println("Current response:");
+  // Serial.printf("%s\n", state.currentRequest.response);
+  for (int i = 0; i < MAX_RESPONSE_SIZE; i++) {
+    Serial.print(state.currentRequest.response[i]);
+  }
+  Serial.println("END");
+
+  // Check succeeded
+  if (requestSucceeded(state.currentRequest.response)) {
+    Serial.println("Request succeeded.");
+    client.stop();
+    switchState(ONLINE);
+    return;
+  }
+
+  // Check failed
+
+  if (requestFailed()) {
     Serial.println("Something happened...");
     client.stop();
-    state.currentRequest.response[state.currentRequest.responseLen] = '\0'; // Ensure null-terminate exists
-    if (requestSucceeded(state.currentRequest.response)) {
-      Serial.println("Request succeeded.");
-      // Request succeeded
-      switchState(ONLINE);
-    } else if (state.currentRequest.retries < REQUEST_MAX_RETRIES) {
+    if (state.currentRequest.retries < REQUEST_MAX_RETRIES) {
       // Failed - retry
       Serial.printf("Request failed, retrying... (attempt %d)\n",
                     state.currentRequest.retries + 1);
-      retryTransmittion();
+      retryTransmission();
     } else {
       // Failed - give up
       Serial.println("Request failed, giving up.");
       switchState(ONLINE);
     }
-  }
-
-  // Read
-  if (client.available()) {
-    state.currentRequest.response[state.currentRequest.responseLen++] =
-        client.read();
+    return;
   }
 }
 
 bool requestSucceeded(char* response) {
   // Check for `"status":"success"` in response
   char *strstrResult = strstr(response, "\"status\":\"success\"");
-  Serial.printf("strstr result: %s\n", strstrResult);
   return strstrResult != nullptr;
 }
 
-void retryTransmittion() {
+bool exceededResponseSize() {
+  return state.currentRequest.responseLen >=
+         MAX_RESPONSE_SIZE - 2;  // -2 to leave space for null-terminator
+}
+
+bool requestFailed() {
+  // Check for timeout, disconnection, or exceeded response size
+  bool isTimeout = getMillisPastEpoch() - state.currentRequest.lastSentMillis >
+                   REQUEST_TIMEOUT_MILLIS;
+  return !client.connected() || isTimeout || exceededResponseSize();
+}
+
+void retryTransmission() {
   state.currentRequest.retries++;
-  state.currentRequest.lastSentMillis = getMillisPastEpoch();
-  state.currentRequest.responseLen = 0;
   transmitBatch(state.currentRequest.reading);
 }
 
@@ -391,7 +407,7 @@ void onRtcSync() {
     BatchReading reading = batchReadingsBuffer.front();
     batchReadingsBuffer.pop();
     // Calculate new timestamp
-    reading.timestamp = state.rtcSynced + (reading.timestamp - state.millisSynced) / 1000;
+    reading.timestamp = (unsigned long long)state.rtcSynced * 1000 + (reading.timestamp - state.millisSynced);
     tempBuffer.push_back(reading);
   }
   for (BatchReading& reading : tempBuffer) {
