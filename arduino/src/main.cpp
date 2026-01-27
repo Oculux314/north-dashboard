@@ -10,7 +10,7 @@
   #define SERIAL_SETUP Serial.begin(115200);
   #define LOG(x) Serial.println(x)
   #define LOGF(fmt, ...) Serial.printf((fmt), __VA_ARGS__)
-  #define BATCH_MILLIS_DEF 1000
+  #define BATCH_MILLIS_DEF 2000 // 2s
 #else
   #define SERIAL_SETUP
   #define LOG(x)
@@ -79,17 +79,17 @@ int readingCount = 0;
 // MARK: DECLARATIONS
 
 void switchState(WifiState newState);
+void updateLed();
 
+void updateRtc();
+bool rtcSynced();
+unsigned long long getMillisPastEpoch();
+void onRtcSync();
+
+void updateWifi();
 void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info);
 void initWifi();
-
-void updateLed();
-
-void updateReadings();
-float getAccurateReading(uint8_t pin);
-float readVoltage();
-float readCurrent();
 
 void transmitBatch(BatchReading reading);
 void readTransmitResponse();
@@ -98,10 +98,10 @@ bool exceededResponseSize();
 bool requestFailed();
 void retryTransmission();
 
-void updateRtc();
-bool rtcSynced();
-unsigned long long getMillisPastEpoch();
-void onRtcSync();
+void updateReadings();
+float getAccurateReading(uint8_t pin);
+float readVoltage();
+float readCurrent();
 
 // MARK: SETUP
 
@@ -134,6 +134,7 @@ void setup() {
 void loop() {
   updateLed();
   updateRtc();
+  updateWifi();
   updateReadings();
 }
 
@@ -151,18 +152,6 @@ void switchState(WifiState newState) {
   }
   state.wifiState = newState;
 }
-
-// MARK: INIT WIFI
-
-void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
-  switchState(PENDING_TIME_SYNC);
-}
-
-void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
-  switchState(OFFLINE);
-}
-
-void initWifi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
 
 // MARK: LED
 
@@ -198,78 +187,103 @@ void updateLed() {
   }
 }
 
-// MARK: READINGS
+// MARK: RTC
 
-void updateReadings() {
-  // Transmit (if needed)
-  if (!batchReadingsBuffer.empty() && state.wifiState == ONLINE &&
-      rtcSynced()) {
-    LOG("Attempting transmission of stored batch...");
+void updateRtc() {
+  switch (state.wifiState) {
+    case PENDING_TIME_SYNC:
+      if (rtcSynced()) {
+        if (state.rtcSynced == 0) {
+          // Run onRtcSync once when RTC is synced
+          onRtcSync();
+        }
+        switchState(ONLINE);
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+bool rtcSynced() {
+  time_t now = rtc.getEpoch();
+  return now > 1609459200;  // Jan 1, 2021
+}
+
+// Returns milliseconds past epoch, handling millis() overflow
+// Returns regular millis() before RTC sync
+unsigned long long getMillisPastEpoch() {
+  unsigned long rawMillis = millis();
+  unsigned long millisSinceSync;
+  if (rawMillis < state.millisSynced) {
+    // millis() overflowed
+    millisSinceSync = rawMillis + (ULONG_MAX - state.millisSynced); // Brackets to avoid overflow again
+  } else {
+    millisSinceSync = rawMillis - state.millisSynced;
+  }
+
+  return ((unsigned long long)state.rtcSynced) * 1000 + millisSinceSync;
+}
+
+// Flags sync time and retroactively updates reading timestamps
+void onRtcSync() {
+  // Record sync time
+  state.rtcSynced = rtc.getEpoch();
+  state.millisSynced = millis();
+
+  // Retroactively update timestamps
+  std::vector<BatchReading> tempBuffer;
+  while (!batchReadingsBuffer.empty()) {
     BatchReading reading = batchReadingsBuffer.front();
-    batchReadingsBuffer.pop(); // Ignore failures lol
-    transmitBatch(reading);
+    batchReadingsBuffer.pop();
+    // Calculate new timestamp
+    reading.timestamp = (unsigned long long)state.rtcSynced * 1000 + (reading.timestamp - state.millisSynced);
+    tempBuffer.push_back(reading);
+  }
+  for (BatchReading& reading : tempBuffer) {
+    batchReadingsBuffer.push(reading);
   }
 
-  // Read transmit response (if needed)
-  if (state.wifiState == TRANSMITTING) {
-    readTransmitResponse();
+  // Flash LED to indicate RTC sync
+  state.rtcSyncFlashEndMillis = getMillisPastEpoch() + 500;
+  LOGF("RTC Synced: flash ends at %llu millis\n", state.rtcSyncFlashEndMillis);
+}
+
+// MARK: WIFI
+
+void updateWifi() {
+  switch (state.wifiState) {
+    case ONLINE:
+      // Transmit (if needed)
+      if (rtcSynced() && !batchReadingsBuffer.empty()) {
+        LOG("Attempting transmission of stored batch...");
+        BatchReading reading = batchReadingsBuffer.front();
+        batchReadingsBuffer.pop(); // Ignore failures lol
+        transmitBatch(reading);
+      }
+      break;
+    case TRANSMITTING:
+      // Read transmit response
+      readTransmitResponse();
+      break;
+    default:
+      break;
   }
-
-  // Create batch (if needed)
-  unsigned long long currentMillis = getMillisPastEpoch();
-  if (currentMillis > state.nextBatchMillis) {
-    // Store batch
-    BatchReading avgReading;
-    avgReading.voltage = readingSum.voltage / readingCount;
-    avgReading.current = readingSum.current / readingCount;
-    avgReading.timestamp = currentMillis -
-                           (BATCH_MILLIS / 2);  // Approximate middle of batch
-    batchReadingsBuffer.push(avgReading);
-    LOGF("Batch stored: V=%f, I=%f, T=%llu, n=%d\n", avgReading.voltage,
-                  avgReading.current, avgReading.timestamp, readingCount);
-    // Reset
-    readingSum = Reading();
-    readingCount = 0;
-    state.nextBatchMillis += BATCH_MILLIS;
-    if (state.nextBatchMillis < currentMillis) {
-      // Handle shift due to time sync
-      state.nextBatchMillis = currentMillis + BATCH_MILLIS;
-    }
-  }
-
-  // Perform read
-  readingSum.voltage += readVoltage();
-  readingSum.current += readCurrent();
-  readingCount++;
 }
 
-// Generic ADC reading with calibration (VREF=~3.3V, ADC_MAX=4095)
-float getAccurateReading(uint8_t pin) {
-  float calibration  = 1.000; // Adjust for ultimate accuracy when input is measured using an accurate DVM, if reading too high then use e.g. 0.99, too low use 1.01
-  esp_adc_cal_characteristics_t adc_chars;
-  esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
-  uint32_t vrefInternal = adc_chars.vref; // ~1100 mV
-  LOGF("Vref Internal: %d mV\n", vrefInternal);
-  return (analogRead(pin) / 4095.0) * 3.3 * (1100 / vrefInternal) * calibration;
+// -- Init --
+
+void onWifiConnect(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switchState(PENDING_TIME_SYNC);
 }
 
-float VOLTAGE_RATIO = (10 + 2) / 2.0; // R1=1.0M, R2=0.2M
-float readVoltage() {
-  float reading = getAccurateReading(VOLTAGE_PIN);
-  float voltage = reading * VOLTAGE_RATIO;
-  float adjustedVoltage = voltage * 1.00;
-  return adjustedVoltage;
+void onWifiDisconnect(WiFiEvent_t event, WiFiEventInfo_t info) {
+  switchState(OFFLINE);
 }
 
-float CURRENT_RATIO = (1 + 1) / 1.0 * 300 / 5.0; // R1=1M, R2=1M, 5V = 300A
-float readCurrent() {
-  float reading = getAccurateReading(CURRENT_PIN);
-  float current = reading * CURRENT_RATIO;
-  float adjustedCurrent = current * 1.00;
-  return current;
-}
+void initWifi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
 
-// MARK: WIFI TRANSMISSION
+// -- Transmit POST --
 
 void transmitBatch(BatchReading reading) {
   LOGF("Transmitting batch: V=%f, I=%f, T=%llu\n", reading.voltage,
@@ -307,6 +321,8 @@ void transmitBatch(BatchReading reading) {
       "%s\r\n",
       bodyLen, body);
 }
+
+// -- Read Response --
 
 void readTransmitResponse() {
   // Read (handles disconnection, timeout, and exceeded size)
@@ -366,64 +382,60 @@ void retryTransmission() {
   transmitBatch(state.currentRequest.reading);
 }
 
-// MARK: RTC
+// MARK: READINGS
 
-void updateRtc() {
-  switch (state.wifiState) {
-    case PENDING_TIME_SYNC:
-      if (rtcSynced()) {
-        if (state.rtcSynced == 0) {
-          onRtcSync();
-        }
-        switchState(ONLINE);
-      }
-      break;
-    default:
-      break;
+void updateReadings() {
+  // Create batch (if needed)
+  unsigned long long currentMillis = getMillisPastEpoch();
+  if (currentMillis > state.nextBatchMillis) {
+    // Store batch
+    BatchReading avgReading;
+    avgReading.voltage = readingSum.voltage / readingCount;
+    avgReading.current = readingSum.current / readingCount;
+    avgReading.timestamp = currentMillis -
+                           (BATCH_MILLIS / 2);  // Approximate middle of batch
+    batchReadingsBuffer.push(avgReading);
+    LOGF("Batch stored: V=%f, I=%f, T=%llu, n=%d\n", avgReading.voltage,
+                  avgReading.current, avgReading.timestamp, readingCount);
+    // Reset
+    readingSum = Reading();
+    readingCount = 0;
+    state.nextBatchMillis += BATCH_MILLIS;
+    if (state.nextBatchMillis < currentMillis) {
+      // Handle shift due to time sync
+      state.nextBatchMillis = currentMillis + BATCH_MILLIS;
+    }
   }
-  // Run onRtcSync once when RTC is synced
+
+  // Perform read
+  readingSum.voltage += readVoltage();
+  readingSum.current += readCurrent();
+  readingCount++;
 }
 
-bool rtcSynced() {
-  time_t now = rtc.getEpoch();
-  return now > 1609459200;  // Jan 1, 2021
+// Generic ADC reading with calibration (VREF=~3.3V, ADC_MAX=4095)
+// @From https://github.com/G6EJD/ESP32-ADC-Accuracy-Improvement/tree/main
+float getAccurateReading(uint8_t pin) {
+  float calibration  = 1.000;
+  esp_adc_cal_characteristics_t adc_chars;
+  esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+  uint32_t vrefInternal = adc_chars.vref; // ~1100 mV
+  // LOGF("Vref Internal: %d mV\n", vrefInternal);
+  return (analogRead(pin) / 4095.0) * 3.3 * (1100.0 / vrefInternal) * calibration;
 }
 
-// Returns milliseconds past epoch, handling millis() overflow
-// Returns regular millis() before RTC sync
-unsigned long long getMillisPastEpoch() {
-  unsigned long rawMillis = millis();
-  unsigned long millisSinceSync;
-  if (rawMillis < state.millisSynced) {
-    // millis() overflowed
-    millisSinceSync = rawMillis + (ULONG_MAX - state.millisSynced); // Brackets to avoid overflow again
-  } else {
-    millisSinceSync = rawMillis - state.millisSynced;
-  }
-
-  return ((unsigned long long)state.rtcSynced) * 1000 + millisSinceSync;
+float VOLTAGE_RATIO = (10 + 2) / 2.0; // R1=1.0M, R2=0.2M
+float readVoltage() {
+  float reading = getAccurateReading(VOLTAGE_PIN);
+  float voltage = reading * VOLTAGE_RATIO;
+  float adjustedVoltage = voltage * 1.00;
+  return adjustedVoltage;
 }
 
-// Flags sync time and retroactively updates reading timestamps
-void onRtcSync() {
-  // Record sync time
-  state.rtcSynced = rtc.getEpoch();
-  state.millisSynced = millis();
-
-  // Retroactively update timestamps
-  std::vector<BatchReading> tempBuffer;
-  while (!batchReadingsBuffer.empty()) {
-    BatchReading reading = batchReadingsBuffer.front();
-    batchReadingsBuffer.pop();
-    // Calculate new timestamp
-    reading.timestamp = (unsigned long long)state.rtcSynced * 1000 + (reading.timestamp - state.millisSynced);
-    tempBuffer.push_back(reading);
-  }
-  for (BatchReading& reading : tempBuffer) {
-    batchReadingsBuffer.push(reading);
-  }
-
-  // Flash LED to indicate RTC sync
-  state.rtcSyncFlashEndMillis = getMillisPastEpoch() + 500;
-  LOGF("RTC Synced: flash ends at %llu millis\n", state.rtcSyncFlashEndMillis);
+float CURRENT_RATIO = (1 + 1) / 1.0 * 300 / 5.0; // R1=1M, R2=1M, 5V = 300A
+float readCurrent() {
+  float reading = getAccurateReading(CURRENT_PIN);
+  float current = reading * CURRENT_RATIO;
+  float adjustedCurrent = current * 1.00;
+  return current;
 }
