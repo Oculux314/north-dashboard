@@ -3,6 +3,7 @@
 #include <ESP32Time.h>
 #include <queue>
 #include <vector>
+#include "esp_adc_cal.h"
 
 #define DEBUG 1
 #if DEBUG
@@ -86,6 +87,7 @@ void initWifi();
 void updateLed();
 
 void updateReadings();
+float getAccurateReading(uint8_t pin);
 float readVoltage();
 float readCurrent();
 
@@ -241,19 +243,29 @@ void updateReadings() {
   readingCount++;
 }
 
-// VREF=3.3V, ADC_MAX=4096 R1=1.0M, R2=0.2M
-float VOLTAGE_RATIO = 3.3 / 4096.0 * (10 + 2) / 2.0;
-float readVoltage() {
-  int reading = analogRead(VOLTAGE_PIN);
-  float voltage = ((reading + 0.5) * VOLTAGE_RATIO);
-  return voltage;
+// Generic ADC reading with calibration (VREF=~3.3V, ADC_MAX=4095)
+float getAccurateReading(uint8_t pin) {
+  float calibration  = 1.000; // Adjust for ultimate accuracy when input is measured using an accurate DVM, if reading too high then use e.g. 0.99, too low use 1.01
+  esp_adc_cal_characteristics_t adc_chars;
+  esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12, 1100, &adc_chars);
+  uint32_t vrefInternal = adc_chars.vref; // ~1100 mV
+  LOGF("Vref Internal: %d mV\n", vrefInternal);
+  return (analogRead(pin) / 4095.0) * 3.3 * (1100 / vrefInternal) * calibration;
 }
 
-// VREF=3.3V, ADC_MAX=4096 R1=1M, R2=1M, 5V = 300A
-float CURRENT_RATIO = 3.3 / 4096.0 * (1 + 1) / 1.0 * 300 / 5.0;
+float VOLTAGE_RATIO = (10 + 2) / 2.0; // R1=1.0M, R2=0.2M
+float readVoltage() {
+  float reading = getAccurateReading(VOLTAGE_PIN);
+  float voltage = reading * VOLTAGE_RATIO;
+  float adjustedVoltage = voltage * 1.00;
+  return adjustedVoltage;
+}
+
+float CURRENT_RATIO = (1 + 1) / 1.0 * 300 / 5.0; // R1=1M, R2=1M, 5V = 300A
 float readCurrent() {
-  int reading = analogRead(CURRENT_PIN);
-  float current = ((reading + 0.5) * CURRENT_RATIO);
+  float reading = getAccurateReading(CURRENT_PIN);
+  float current = reading * CURRENT_RATIO;
+  float adjustedCurrent = current * 1.00;
   return current;
 }
 
