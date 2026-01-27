@@ -428,7 +428,10 @@ float VOLTAGE_RATIO = (10 + 2) / 2.0; // R1=1.0M, R2=0.2M
 float readVoltage() {
   float reading = getAccurateReading(VOLTAGE_PIN);
   float voltage = reading * VOLTAGE_RATIO;
-  float adjustedVoltage = voltage * 1.00;
+  if (reading == 0) {
+    return 0.0; // Prevent adjustment when no reading
+  }
+  float adjustedVoltage = voltage + 0.8; // See v-response.csv
   return adjustedVoltage;
 }
 
@@ -436,6 +439,6 @@ float CURRENT_RATIO = (1 + 1) / 1.0 * 300 / 5.0; // R1=1M, R2=1M, 5V = 300A
 float readCurrent() {
   float reading = getAccurateReading(CURRENT_PIN);
   float current = reading * CURRENT_RATIO;
-  float adjustedCurrent = current * 1.00;
+  float adjustedCurrent = current * 1.00; // TODO
   return current;
 }
