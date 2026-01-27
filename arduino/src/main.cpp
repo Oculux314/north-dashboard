@@ -4,14 +4,27 @@
 #include <queue>
 #include <vector>
 
+#define DEBUG 1
+#if DEBUG
+  #define SERIAL_SETUP Serial.begin(115200);
+  #define LOG(x) Serial.println(x)
+  #define LOGF(fmt, ...) Serial.printf((fmt), __VA_ARGS__)
+  #define BATCH_MILLIS_DEF 1000
+#else
+  #define SERIAL_SETUP
+  #define LOG(x)
+  #define LOGF(fmt, ...)
+  #define BATCH_MILLIS_DEF 60000 // 1min
+#endif
+
 // MARK: CONSTANTS
 
 const String WIFI_SSID = "WDG";
 const String WIFI_PASSWORD = "strawberry";
 const char* BACKEND_SERVER = "grateful-ibis-516.convex.cloud";
 
-const int BATCH_MILLIS = 10000;
-const int REQUEST_TIMEOUT_MILLIS = 5000;
+const int BATCH_MILLIS = BATCH_MILLIS_DEF;
+const int REQUEST_TIMEOUT_MILLIS = 10000; // 10s
 const int REQUEST_MAX_RETRIES = 3;
 const int MAX_RESPONSE_SIZE = 512;
 
@@ -91,7 +104,7 @@ void onRtcSync();
 // MARK: SETUP
 
 void setup() {
-  Serial.begin(115200);
+  SERIAL_SETUP;
   state.currentRequest.response[0] = '\0';
 
   // Pins
@@ -125,7 +138,7 @@ void loop() {
 // MARK: SWITCH STATE
 
 void switchState(WifiState newState) {
-  Serial.printf("Switching WiFi state from %d to %d\n", state.wifiState,
+  LOGF("Switching WiFi state from %d to %d\n", state.wifiState,
                 newState);
   switch (newState) {
     case OFFLINE:
@@ -152,9 +165,7 @@ void initWifi() { WiFi.begin(WIFI_SSID, WIFI_PASSWORD); }
 // MARK: LED
 
 void updateLed() {
-  Serial.printf("LED State Update: WiFi State %d (%llu)\n", state.wifiState, getMillisPastEpoch());
   if (getMillisPastEpoch() < state.rtcSyncFlashEndMillis) {
-    Serial.println("RTC Sync Flash");
     // Flash 5 times to indicate RTC sync ready state
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, getMillisPastEpoch() % 100 < 25 ? HIGH : LOW);
@@ -191,9 +202,9 @@ void updateReadings() {
   // Transmit (if needed)
   if (!batchReadingsBuffer.empty() && state.wifiState == ONLINE &&
       rtcSynced()) {
-    Serial.println("Attempting transmission of stored batch...");
+    LOG("Attempting transmission of stored batch...");
     BatchReading reading = batchReadingsBuffer.front();
-    batchReadingsBuffer.pop();  // Ignore failures lol
+    batchReadingsBuffer.pop(); // Ignore failures lol
     transmitBatch(reading);
   }
 
@@ -212,8 +223,8 @@ void updateReadings() {
     avgReading.timestamp = currentMillis -
                            (BATCH_MILLIS / 2);  // Approximate middle of batch
     batchReadingsBuffer.push(avgReading);
-    Serial.printf("Batch stored: V=%f, I=%f\n", avgReading.voltage,
-                  avgReading.current);
+    LOGF("Batch stored: V=%f, I=%f, T=%llu, n=%d\n", avgReading.voltage,
+                  avgReading.current, avgReading.timestamp, readingCount);
     // Reset
     readingSum = Reading();
     readingCount = 0;
@@ -249,7 +260,7 @@ float readCurrent() {
 // MARK: WIFI TRANSMISSION
 
 void transmitBatch(BatchReading reading) {
-  Serial.printf("Transmitting batch: V=%f, I=%f, T=%llu\n", reading.voltage,
+  LOGF("Transmitting batch: V=%f, I=%f, T=%llu\n", reading.voltage,
                 reading.current, reading.timestamp);
 
   // Setup request state
@@ -263,7 +274,7 @@ void transmitBatch(BatchReading reading) {
   switchState(TRANSMITTING);
 
   if (!client.connect(BACKEND_SERVER, 443)) {
-    Serial.println("Not connected to backend server");
+    LOG("Not connected to backend server");
     return;
   }
 
@@ -283,51 +294,35 @@ void transmitBatch(BatchReading reading) {
       "\r\n"
       "%s\r\n",
       bodyLen, body);
-
-  Serial.println("Request sent.");
 }
 
 void readTransmitResponse() {
-  Serial.println("Reading transmit response...");
-  Serial.printf("Response length so far: %d\n",
-                state.currentRequest.responseLen);
-
-  // Read
-  if (client.connected() && client.available() && !exceededResponseSize()) {
-    Serial.println("Reading byte from client...");
+  // Read (handles disconnection, timeout, and exceeded size)
+  while (!requestFailed() && client.available()) {
     char c = client.read();
     state.currentRequest.response[state.currentRequest.responseLen++] = c;
     state.currentRequest.response[state.currentRequest.responseLen] = '\0';
   }
 
-  Serial.println("Current response:");
-  // Serial.printf("%s\n", state.currentRequest.response);
-  for (int i = 0; i < MAX_RESPONSE_SIZE; i++) {
-    Serial.print(state.currentRequest.response[i]);
-  }
-  Serial.println("END");
-
   // Check succeeded
   if (requestSucceeded(state.currentRequest.response)) {
-    Serial.println("Request succeeded.");
+    LOG("Request succeeded.");
     client.stop();
     switchState(ONLINE);
     return;
   }
 
   // Check failed
-
   if (requestFailed()) {
-    Serial.println("Something happened...");
     client.stop();
     if (state.currentRequest.retries < REQUEST_MAX_RETRIES) {
       // Failed - retry
-      Serial.printf("Request failed, retrying... (attempt %d)\n",
+      LOGF("Request failed, retrying... (attempt %d)\n",
                     state.currentRequest.retries + 1);
       retryTransmission();
     } else {
       // Failed - give up
-      Serial.println("Request failed, giving up.");
+      LOG("Request failed, giving up.");
       switchState(ONLINE);
     }
     return;
@@ -349,6 +344,8 @@ bool requestFailed() {
   // Check for timeout, disconnection, or exceeded response size
   bool isTimeout = getMillisPastEpoch() - state.currentRequest.lastSentMillis >
                    REQUEST_TIMEOUT_MILLIS;
+  // LOGF("Request failed check: !connected=%d, isTimeout=%d, exceededResponseSize=%d\n",
+  //               !client.connected(), isTimeout, exceededResponseSize());
   return !client.connected() || isTimeout || exceededResponseSize();
 }
 
@@ -416,5 +413,5 @@ void onRtcSync() {
 
   // Flash LED to indicate RTC sync
   state.rtcSyncFlashEndMillis = getMillisPastEpoch() + 500;
-  Serial.printf("Flash ends at millis %llu\n", state.rtcSyncFlashEndMillis);
+  LOGF("RTC Synced: flash ends at %llu millis\n", state.rtcSyncFlashEndMillis);
 }
