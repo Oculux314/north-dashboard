@@ -5,9 +5,9 @@
 #include <vector>
 #include "esp_adc_cal.h"
 
-#define DEBUG 0
+#define DEBUG 1
 #if DEBUG
-  #define SERIAL_SETUP Serial.begin(115200);
+  #define SERIAL_SETUP Serial.begin(115200)
   #define LOG(x) Serial.println(x)
   #define LOGF(fmt, ...) Serial.printf((fmt), __VA_ARGS__)
   #define BATCH_MILLIS_DEF 2000 // 2s
@@ -425,25 +425,26 @@ float getAccurateReading(uint8_t pin) {
 }
 
 float VOLTAGE_VD_RATIO = (10 + 2) / 2.0; // Voltage divider: R1=1.0M, R2=0.2M
-float VOLTAGE_OFFSET = -0.8; // 0V real = 0.8V measured: see v-response.csv
 float readVoltage() {
   float reading = getAccurateReading(VOLTAGE_PIN);
+  LOGF("Raw Voltage Reading: %f V\n", reading);
   float voltage = reading * VOLTAGE_VD_RATIO;
-  if (reading == 0) {
-    return 0.0; // Prevent adjustment when no reading
+  // 0V real = 0.8V measured w/o offset: see v-response.csv
+  float adjustedVoltage = voltage - 0.8;
+  if (adjustedVoltage < 0) {
+    adjustedVoltage = 0.0; // Clamp negative voltages to 0V
   }
-  float adjustedVoltage = voltage + VOLTAGE_OFFSET;
   return adjustedVoltage;
 }
 
-float CURRENT_VD_RATIO = (2.0 + 1.0) / 1.0; // Voltage divider: R1=2M, R2=1M
-float CURRENT_SENSOR_OFFSET_V = 0.0; // I've level shifted the sensor output by +5V
 float VOLTS_TO_AMPS = 300.0 / 5.0; // +-5V = +-300A
-float CURRENT_OFFSET = 0; // 0A real = 0A measured: see i-response.csv
 float readCurrent() {
   float reading = getAccurateReading(CURRENT_PIN);
-  float sensorOutput = reading * CURRENT_VD_RATIO - CURRENT_SENSOR_OFFSET_V; // [0V to 3.3V] -> [-5V to +5V]
+  LOGF("Raw Current Reading: %f V\n", reading);
+  // I'm using a level-shifted voltage divider to convert S=[-5V, +5V] to V=[0V, 3.3V]
+  float sensorOutput = 5 * reading - 6.6; // S = (2r+1) * V - 3.3r where r=2
   float current = sensorOutput * VOLTS_TO_AMPS;
-  float adjustedCurrent = current + CURRENT_OFFSET;
+  // 0A real = -31.7A measured w/o offset
+  float adjustedCurrent = current + 31.7;
   return adjustedCurrent;
 }
