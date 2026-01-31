@@ -5,7 +5,7 @@
 #include <vector>
 #include "esp_adc_cal.h"
 
-#define DEBUG 1
+#define DEBUG 0
 #if DEBUG
   #define SERIAL_SETUP Serial.begin(115200)
   #define LOG(x) Serial.println(x)
@@ -255,7 +255,7 @@ void updateWifi() {
   switch (state.wifiState) {
     case ONLINE:
       // Transmit (if needed)
-      if (rtcSynced() && !batchReadingsBuffer.empty()) {
+      if (rtcSynced() && !batchReadingsBuffer.empty() && !DEBUG) {
         LOG("Attempting transmission of stored batch...");
         BatchReading reading = batchReadingsBuffer.front();
         batchReadingsBuffer.pop(); // Ignore failures lol
@@ -427,24 +427,24 @@ float getAccurateReading(uint8_t pin) {
 float VOLTAGE_VD_RATIO = (10 + 2) / 2.0; // Voltage divider: R1=1.0M, R2=0.2M
 float readVoltage() {
   float reading = getAccurateReading(VOLTAGE_PIN);
-  LOGF("Raw Voltage Reading: %f V\n", reading);
   float voltage = reading * VOLTAGE_VD_RATIO;
-  // 0V real = 0.8V measured w/o offset: see v-response.csv
-  float adjustedVoltage = voltage - 0.8;
-  if (adjustedVoltage < 0) {
-    adjustedVoltage = 0.0; // Clamp negative voltages to 0V
+  if (voltage < 0.1) {
+    return 0.0; // Report 0V as is
   }
+  // 0V real = -0.8V measured w/o offset: see v-response.csv
+  float adjustedVoltage = voltage + 0.71;
+  // LOGF("Raw Voltage Reading: %f V\n", adjustedVoltage);
   return adjustedVoltage;
 }
 
 float VOLTS_TO_AMPS = 300.0 / 5.0; // +-5V = +-300A
 float readCurrent() {
   float reading = getAccurateReading(CURRENT_PIN);
-  LOGF("Raw Current Reading: %f V\n", reading);
   // I'm using a level-shifted voltage divider to convert S=[-5V, +5V] to V=[0V, 3.3V]
   float sensorOutput = 5 * reading - 6.6; // S = (2r+1) * V - 3.3r where r=2
   float current = sensorOutput * VOLTS_TO_AMPS;
   // 0A real = -31.7A measured w/o offset
-  float adjustedCurrent = current + 31.7;
+  float adjustedCurrent = current + 25.5;
+  // LOGF("Raw Current Reading: %f A\n", adjustedCurrent);
   return adjustedCurrent;
 }
